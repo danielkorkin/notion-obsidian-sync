@@ -1,0 +1,5 @@
+notion-client
+watchdog
+markdown2
+python-dotenv
+beautifulsoup4
