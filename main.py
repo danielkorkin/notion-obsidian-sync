@@ -67,10 +67,13 @@ def extract_tags(content):
 
 
 def markdown_to_notion_blocks(md_content):
+    # Convert markdown to HTML using markdown2
     html_content = markdown(md_content)
     soup = BeautifulSoup(html_content, "html.parser")
 
     blocks = []
+    stack = [(None, blocks)]  # Stack to keep track of current list hierarchy
+
     for element in soup.children:
         if element.name == "h1":
             blocks.append(
@@ -84,6 +87,7 @@ def markdown_to_notion_blocks(md_content):
                     },
                 }
             )
+            print(f"Processed H1: {element.get_text()}")
         elif element.name == "h2":
             blocks.append(
                 {
@@ -96,6 +100,7 @@ def markdown_to_notion_blocks(md_content):
                     },
                 }
             )
+            print(f"Processed H2: {element.get_text()}")
         elif element.name == "h3":
             blocks.append(
                 {
@@ -108,21 +113,155 @@ def markdown_to_notion_blocks(md_content):
                     },
                 }
             )
-        elif element.name == "p":
+            print(f"Processed H3: {element.get_text()}")
+        elif element.name == "h4":
             blocks.append(
                 {
                     "object": "block",
-                    "type": "paragraph",
-                    "paragraph": {
+                    "type": "heading_3",  # Notion supports up to heading_3, so use it for h4
+                    "heading_3": {
                         "rich_text": [
                             {"type": "text", "text": {"content": element.get_text()}}
                         ]
                     },
                 }
             )
-        # Add more elements as needed (e.g., lists, quotes)
+            print(f"Processed H4: {element.get_text()}")
+        elif element.name == "p":
+            rich_text = process_rich_text(element)
+            if rich_text:  # Ensure the rich_text is not empty
+                blocks.append(
+                    {
+                        "object": "block",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": rich_text},
+                    }
+                )
+                print(f"Processed paragraph: {rich_text}")
+        elif element.name == "ul":
+            for li in element.find_all("li", recursive=False):
+                process_list_item(li, stack)
+        elif element.name == "pre":  # Handle large code blocks
+            code_block = element.find("code")
+            if code_block:
+                # Extract the content and language
+                code_text = code_block.get_text(strip=False)
+                code_language = "plain"
+                if "class" in element.attrs:
+                    classes = element.attrs["class"]
+                    for cls in classes:
+                        if cls.startswith("language-"):
+                            code_language = cls.split("-", 1)[1]
+                            break
+                blocks.append(
+                    {
+                        "object": "block",
+                        "type": "code",
+                        "code": {
+                            "rich_text": [
+                                {
+                                    "type": "text",
+                                    "text": {"content": code_text.strip()},
+                                }
+                            ],
+                            "language": code_language,
+                        },
+                    }
+                )
+                print(
+                    f"Processed code block with language {code_language}: {code_text.strip()}"
+                )
 
     return blocks
+
+
+def process_list_item(li_element, stack):
+    """Process list items, handling nested bullet points."""
+    indent_level = len(li_element.find_parents("ul")) - 1
+    rich_text = process_rich_text(li_element)
+
+    if rich_text:  # Ensure the rich_text is not empty
+        block = {
+            "object": "block",
+            "type": "bulleted_list_item",
+            "bulleted_list_item": {"rich_text": rich_text},
+        }
+        print(f"Processed list item: {rich_text} at indent level {indent_level}")
+
+        # Adjust the stack based on the current indent level
+        while len(stack) > indent_level + 1:
+            stack.pop()
+
+        parent_block = stack[-1][1]  # Get the parent block list
+        parent_block.append(block)
+
+        # If this list item contains a nested list, push it onto the stack
+        if li_element.find("ul"):
+            sub_blocks = []
+            block["children"] = sub_blocks
+            stack.append((block, sub_blocks))
+
+
+def process_rich_text(element):
+    rich_text = []
+    for content in element.contents:
+        if isinstance(content, str):
+            if content.strip():  # Skip empty strings or whitespace-only content
+                rich_text.append({"type": "text", "text": {"content": content}})
+                print(f"Processed text: {content}")
+        elif content.name == "strong":
+            rich_text.append(
+                {
+                    "type": "text",
+                    "text": {"content": content.get_text()},
+                    "annotations": {"bold": True},
+                }
+            )
+            print(f"Processed bold text: {content.get_text()}")
+        elif content.name == "em":
+            rich_text.append(
+                {
+                    "type": "text",
+                    "text": {"content": content.get_text()},
+                    "annotations": {"italic": True},
+                }
+            )
+            print(f"Processed italic text: {content.get_text()}")
+        elif content.name == "s":
+            rich_text.append(
+                {
+                    "type": "text",
+                    "text": {"content": content.get_text()},
+                    "annotations": {"strikethrough": True},
+                }
+            )
+            print(f"Processed strikethrough text: {content.get_text()}")
+        elif content.name == "code":
+            rich_text.append(
+                {
+                    "type": "text",
+                    "text": {"content": content.get_text()},
+                    "annotations": {"code": True},
+                }
+            )
+            print(f"Processed inline code: {content.get_text()}")
+        elif content.name == "a":
+            # Ensure the href attribute is fully preserved
+            url = content.get("href")
+            if url and not url.startswith("http"):
+                url = "http://" + url
+            rich_text.append(
+                {
+                    "type": "text",
+                    "text": {
+                        "content": content.get_text(),
+                        "link": {"url": url},
+                    },
+                }
+            )
+            print(f"Processed link: {content.get_text()} ({url})")
+
+    return rich_text
 
 
 def clear_notion_page(page_id):
@@ -139,6 +278,7 @@ def find_or_create_page(title, parent_id):
     for child in children:
         if child["type"] == "child_page" and "title" in child["child_page"]:
             if child["child_page"]["title"] == title:
+                print(f"Found existing page: {title}")
                 return child["id"]
 
     # If not found, create a new page
@@ -178,8 +318,9 @@ def sync_note_to_notion(note_path):
 
     # Convert markdown content to Notion blocks and upload it
     blocks = markdown_to_notion_blocks(content)
-    client.blocks.children.append(block_id=note_page_id, children=blocks)
-    print(f"Uploaded content to page: {note_title}")
+    if blocks:  # Ensure blocks is not empty before trying to append
+        client.blocks.children.append(block_id=note_page_id, children=blocks)
+        print(f"Uploaded content to page: {note_title}")
 
     # Update sync history
     sync_history[note_path] = os.path.getmtime(note_path)
